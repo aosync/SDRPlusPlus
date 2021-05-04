@@ -3,6 +3,7 @@
 #include <endian.h>
 
 #include <atomic>
+#include <shared_mutex>
 #include <map>
 
 enum FileMode {
@@ -164,12 +165,15 @@ public:
 class VFS;
 class File;
 
-typedef uint32_t (*ReadHandler)(File* file, std::string& buf, uint64_t offset, uint32_t count);
-typedef uint32_t (*WriteHandler)(File* file, uint64_t offset, uint32_t count, char* data);
+typedef uint32_t (*ReadHandler)(std::shared_ptr<File> file, std::string& buf, uint64_t offset, uint32_t count);
+typedef uint32_t (*WriteHandler)(std::shared_ptr<File> file, uint64_t offset, uint32_t count, char* data);
 
 class File {
 public:
     static uint64_t pathcur;
+    ~File() {
+        std::cout << "file is deleted :vibe:" << std::endl;
+    }
     File() {}
     File(uint32_t m, VFS* v, uint64_t p) {
         vfs = v;
@@ -186,10 +190,10 @@ public:
         group = "aws";
         modifier = "aws";
         iocount = 0;
+        binned = false;
         writing = false;
-        nostat = false;
-        statting = 0;
-        reading = 0;
+        structural_readers = 0;
+        self_readers = 0;
     }
     uint64_t path;
     Qid qid;
@@ -207,16 +211,20 @@ public:
     std::map<std::string, uint64_t> children;
     std::string content;
     std::atomic<unsigned> iocount;
-    std::atomic<bool> nostat;
-    std::atomic<unsigned> statting;
+    std::shared_mutex hasio;
+    std::shared_mutex structural; // tells whether stat-ed data is being accessed.
+    std::atomic<bool> binned;
     std::atomic<bool> writing;
-    std::atomic<unsigned> reading;
+    std::atomic<unsigned> structural_readers;
+    std::mutex self;
+    std::atomic<unsigned> self_readers;
 
     ReadHandler rh;
     WriteHandler wh;
 
     Stat stat() { // what if stat-ed during deletion ??
         Stat s;
+        structural.lock_shared();
         s.type = 0;
         s.dev = 0;
         s.qid = qid;
@@ -228,6 +236,7 @@ public:
         s.uid = owner;
         s.gid = group;
         s.muid = modifier;
+        structural.unlock_shared();
         return s;
     }
 };
@@ -236,36 +245,51 @@ uint64_t File::pathcur = 1;
 
 class VFS {
 public:
-    File* getFile(uint64_t path) {
+    std::shared_ptr<File> getFile(uint64_t path) {
+        access.lock_shared();
         if (files.count(path) <= 0) {
+            access.unlock_shared();
             return nullptr;
         }
-        File* f = files[path];
-        if (f->nostat) { return nullptr; }
-        return files[path];
+        auto f = files[path];
+        access.unlock_shared();
+        return f;
     }
-    ~VFS() {
-        for(auto i : files) {
-            delete i.second;
+    void deleteFile(uint64_t path) {
+        auto f = getFile(path);
+        if (!f) { return; }
+        auto p = getFile(f->parent);
+        if(p) {
+            p->structural.lock();
+            p->children.erase(f->filename);
+            p->structural.unlock();
         }
+        access.lock();
+        files.erase(path);
+        access.unlock();
     }
-    std::map<uint64_t, File*> files;
+    std::shared_mutex access;
+    std::map<uint64_t, std::shared_ptr<File>> files;
     std::map<std::string, uint64_t> roots;
 };
 
 struct VFSIO {
     VFSIO() {}
-    VFSIO(File* f) {
+    VFSIO(std::shared_ptr<File> f) {
         file = f;
+        vfs = f->vfs;
         offset = 0;
         readdir = f->children.begin();
         enddir = f->children.end();
         file->iocount++;
+        std::cout << "create io[" << file->path << "] = " << file->filename << " with iocount " << file->iocount << std::endl;
     }
     ~VFSIO() {
+        std::cout << "delete io[" << file->path << "] = " << file->filename << " with iocount " << file->iocount << std::endl;
         file->iocount--;
     }
-    File* file;
+    VFS* vfs;
+    std::shared_ptr<File> file;
     uint64_t offset;
     std::map<std::string, uint64_t>::iterator readdir;
     std::map<std::string, uint64_t>::iterator enddir;

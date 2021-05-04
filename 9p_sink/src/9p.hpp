@@ -3,6 +3,7 @@
 #include <buffer.hpp>
 #include <tcp_sockets.hpp>
 #include <vfs.hpp>
+#include <data.hpp>
 
 enum NinePMsgType {
     Tversion = 100,
@@ -40,37 +41,43 @@ struct NinePClient_t {
     NinePClient_t(VFS* vfs) : vfs(vfs) {
         msize = 256;
     }
-    void putfid(uint32_t fid, File* f) {
+    void putfid(uint32_t fid, std::shared_ptr<File> f) {
         fids[fid] = f->path;
     }
-    File* getfid(uint32_t fid) {
+    std::shared_ptr<File> getfid(uint32_t fid) {
         if (fids.count(fid) <= 0) { return nullptr; }
 
         uint64_t path = fids[fid];
 
-        if (vfs->files.count(path) <= 0) {
+        auto f = vfs->getFile(path);
+        if (!f) {
             clunkfid(fid);
             return nullptr;
         }
 
-        return vfs->files[path];
+        return f;
     }
     void clunkfid(uint32_t fid) {
-        io.erase(fid);
-        fids.erase(fid);
+        if (io.count(fid) > 0) {
+            io.erase(fid);
+        }
+        if (fids.count(fid) > 0) {
+            fids.erase(fid);
+        }
     }
     void initio(uint32_t fid) {
-        File* f = getfid(fid);
+        auto f = getfid(fid);
         if (!f) { return; }
-        io[fid] = VFSIO(f);
+        io[fid] = std::make_shared<VFSIO>(f);
     }
-    VFSIO* getio(uint32_t fid) {
+    std::shared_ptr<VFSIO> getio(uint32_t fid) {
+        // getfid(fid); // -> TODO: decide whether to invalidate IO when file deleted 
         if (io.count(fid) <= 0) { return nullptr; }
-        return &io[fid];
+        return io[fid];
     }
     size_t msize;
     std::map<uint32_t, uint64_t> fids;
-    std::map<uint32_t, VFSIO> io;
+    std::map<uint32_t, std::shared_ptr<VFSIO>> io;
     VFS* vfs;
 };
 
@@ -123,36 +130,71 @@ void dumpreq(Buffer& r) {
     printf("==> data end");
 }
 
-uint32_t defRead(File* file, std::string& buf, uint64_t offset, uint32_t count) {
+uint32_t defRead(std::shared_ptr<File> file, std::string& buf, uint64_t offset, uint32_t count) {
     if (offset >= file->content.length()) {
         return 0;
     }
+    std::cout << (unsigned)count << std::endl;
     count = (count > file->content.length() - offset ? file->content.length() - offset : count);
     buf = std::string(file->content.c_str() + offset, count);
     return count;
 }
 
-uint32_t stream(File* file, std::string& buf, uint64_t offset, uint32_t count) {
-    buf = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+uint32_t stream(std::shared_ptr<File> file, std::string& buf, uint64_t offset, uint32_t count) {
+    buf = "rsttsartars";
+    return buf.length();
+}
+
+static std::chrono::time_point<std::chrono::system_clock> start;
+
+uint32_t uptimeRead(std::shared_ptr<File> file, std::string& buf, uint64_t offset, uint32_t count) {
+    if (offset != 0) {
+        return 0;
+    }
+    auto end = std::chrono::system_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end-start;
+    buf = std::to_string(elapsed_seconds.count()) + "\n";
     return buf.length();
 }
 
 class NinePServer : public TcpListener {
 public:
     NinePServer(uint16_t port) : TcpListener(port) {
-        File* root = new File(DMDIR | (U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, 0);
-        File* f = new File((U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, root->path);
-        File* fo = new File(DMDIR | (U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, root->path);
-        f->filename = "hello";
-        f->rh = &stream;
-        f->content = "no stream currently\n";
+        start = std::chrono::system_clock::now();
+        auto root = std::make_shared<File>(DMDIR | (U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, 0);
+        auto f = std::make_shared<File>((U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, root->path);
+        auto uptime = std::make_shared<File>((U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, root->path);
+        auto fo = std::make_shared<File>(DMDIR | (U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, root->path);
+        auto kernel = std::make_shared<File>((U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, root->path);
+        auto initramfs = std::make_shared<File>((U_R|U_X) | (G_R|G_X) | (O_R|O_X), &vfs, root->path);
+        f->filename = "hello.wav";
+        f->rh = &defRead;
+        f->content = std::string((char*)HEYYEYAAEYAAAEYAEYAA_ZZ5LpwO_An4_wav, HEYYEYAAEYAAAEYAEYAA_ZZ5LpwO_An4_wav_len);
+        f->length = f->content.length();
+        kernel->filename = "vmlinuz-linux";
+        kernel->rh = &defRead;
+        kernel->content = std::string((char*)_boot_vmlinuz_linux, _boot_vmlinuz_linux_len);
+        kernel->length = kernel->content.length();
+        initramfs->filename = "initramfs-linux.img";
+        initramfs->rh = &defRead;
+        initramfs->content = std::string((char*)_boot_initramfs_linux_img, _boot_initramfs_linux_img_len);
+        initramfs->length = initramfs->content.length();
+        uptime->filename = "uptime";
+        uptime->rh = &uptimeRead;
+        uptime->length = 1024;
         fo->filename = "fo";
         root->children[f->filename] = f->path;
         root->children[fo->filename] = fo->path;
+        root->children[uptime->filename] = uptime->path;
+        root->children[kernel->filename] = kernel->path;
+        root->children[initramfs->filename] = initramfs->path;
         vfs.roots[""] = root->path;
         vfs.files[f->path] = f;
         vfs.files[root->path] = root;
         vfs.files[fo->path] = fo;
+        vfs.files[uptime->path] = uptime;
+        vfs.files[kernel->path] = kernel;
+        vfs.files[initramfs->path] = initramfs;
     }
 
     void hVersion(NinePClient_t& ncl, Buffer& T, NinePResponse& res) {
@@ -160,11 +202,11 @@ public:
         ncl.msize = msize;
         std::string version = T.get9PString();
         res.add(SerAny<uint32_t>(msize));
-        if (version != "9P0000") {
+        if (version != "9P2000") {
             res.add(SerString(std::string("unknown")));
             return;
         }
-        res.add(SerString(std::string("9P0000")));
+        res.add(SerString(std::string("9P2000")));
     }
 
     void hAttach(NinePClient_t& ncl, Buffer& T, NinePResponse& res) {
@@ -187,19 +229,21 @@ public:
             return;
         }
 
-        File* f = vfs.getFile(vfs.roots[aname]);
+        auto f = vfs.getFile(vfs.roots[aname]);
     
         ncl.putfid(fid, f);
 
         res.add(Qid(f->qid));
     }
 
+
+    // todo -> rewrite this recursively with structural locks
     void hWalk(NinePClient_t& ncl, Buffer& T, NinePResponse& res) {
         uint32_t fid = T.LEGet<uint32_t>();
         uint32_t nwfid = T.LEGet<uint32_t>();
         uint16_t nwname = T.LEGet<uint16_t>();
 
-        File* f = ncl.getfid(fid);
+        auto f = ncl.getfid(fid);
 
         if (nwname == 0) {
             std::cout << "empty, nwfid = " << (unsigned)nwfid << std::endl;
@@ -220,7 +264,7 @@ public:
 
         std::vector<Qid> nwqids;
 
-        File* visit = f;
+        auto visit = f;
 
         for (size_t i = 0; i < nwname; i++) {
             if (wname[i] == ".") {
@@ -259,10 +303,9 @@ public:
 
     void hStat(NinePClient_t& ncl, Buffer& T, NinePResponse& res) {
         uint32_t fid = T.LEGet<uint32_t>();
-        File* f = vfs.getFile(ncl.fids[fid]);
-        f->statting++;
+        auto f = vfs.getFile(ncl.fids[fid]);
+        if (!f) { return res.error("no such file"); }
         Stat st = f->stat();
-        f->statting--;
         res.add(SerAny<uint16_t>(st.size()));
         res.add(Stat(st));
     }
@@ -272,10 +315,25 @@ public:
         ncl.clunkfid(fid);
     }
 
+    void hRemove(NinePClient_t& ncl, Buffer& T, NinePResponse& res) {
+        uint32_t fid = T.LEGet<uint32_t>();
+        auto f = ncl.getfid(fid);
+        if (!f) { return res.error("no such file"); }
+        auto p = vfs.getFile(f->parent);
+        /*if (f->iocount > 0 || p->iocount > 0) {
+            return res.error("file busy");
+        }*/
+        // f->writing = true;
+        std::cout << p->filename << " structural lock" << std::endl;
+        std::cout << p->filename << " structural unlock" << std::endl;
+        vfs.deleteFile(f->path);
+        ncl.clunkfid(fid);
+    }
+
     void hOpen(NinePClient_t& ncl, Buffer& T, NinePResponse& res) {
         uint32_t fid = T.LEGet<uint32_t>();
 
-        File* f = ncl.getfid(fid);
+        auto f = ncl.getfid(fid);
         ncl.initio(fid);
         // for now, we prepare nothing, we just send OK
 
@@ -288,19 +346,25 @@ public:
         uint64_t offset = T.LEGet<uint64_t>();
         uint32_t count = T.LEGet<uint32_t>();
 
-        VFSIO* io = ncl.getio(fid);
+        auto io = ncl.getio(fid);
         if (!io) { 
-            return res.error("file not opened");
+            return res.error("no such file");
+        }
+
+        if (io->file->writing) {
+            return res.error("file busy");
         }
 
         if (io->file->mode & DMDIR) {
             // if (offset != 0) { return res.error("illegal offset"); } // check other condidion
+            io->file->structural.lock_shared();
 retry:
             if (offset != io->offset || io->readdir == io->enddir) {
                 res.add(SerAny<uint32_t>(0));
+                io->file->structural.unlock_shared();
                 return;
             }
-            File* ch = vfs.getFile(io->readdir->second);
+            auto ch = vfs.getFile(io->readdir->second);
             if (!ch) { // should not happen
                 io->readdir++;
                 goto retry;
@@ -311,17 +375,15 @@ retry:
             io->offset += count;
             res.add(SerAny<uint32_t>(count));
             res.add(Stat(chstat));
+            io->file->structural.unlock_shared();
             return;
         }
         // is file
-        if (io->file->writing) {
-            return res.error("file busy");
-        }
         uint32_t normalcount = (count + 11 > ncl.msize ? ncl.msize : count);
-        io->file->reading++;
+        io->file->structural.lock_shared();
         std::string cont;
         uint32_t realcount = io->file->rh(io->file, cont, offset, normalcount);
-        io->file->reading--;
+        io->file->structural.unlock_shared();
         res.add(SerAny<uint32_t>(realcount));
         if (realcount != 0) { res.add(SerRaw(std::move(cont))); }
     }
@@ -331,13 +393,13 @@ retry:
         std::cout << "client?" << std::endl;
         while (true) {
             Buffer T(4); // allocate 4 bytes for size
-            conn.read(T); // read 4 bytes from incoming
+            if (conn.read(T) <= 0) { break; } // read 4 bytes from incoming
 
             uint32_t size = T.LEGet<uint32_t>();
             if (size > ncl.msize) { break; } // too big, error or malicious, discard connection
             T.setCapacity(size); // resize to actual message size
 
-            conn.read(T); // read remaining of message
+            if (conn.read(T) <= 0) { break; } // read remaining of message
 
             uint8_t type = T[0];
             T += 1;
@@ -367,6 +429,9 @@ retry:
                 break;
             case Tread:
                 hRead(ncl, T, res);
+                break;
+            case Tremove:
+                hRemove(ncl, T, res);
                 break;
             default:
                 std::cout << (unsigned)type << std::endl;
