@@ -73,6 +73,8 @@ private:
     }
 
     void updatePresence() {
+        char freq[32];
+        char mode[32];
         double selectedFreq = gui::freqSelect.frequency;
         std::string selectedName = gui::waterfall.selectedVFO;
         strcpy(mode, "Raw");
@@ -123,6 +125,8 @@ private:
         presence.details = "Initializing rich presence...";
         presence.startTimestamp = time(0);
         presence.largeImageKey = "sdrpp_large";
+        presence.smallImageKey = "github";
+        presence.smallImageText = "SDRPlusPlus on GitHub";
         Discord_UpdatePresence(&presence);
     }
 
@@ -132,8 +136,6 @@ private:
     // Rich Presence
     DiscordRichPresence presence;
     double lastFreq;
-    char* freq = new char[1024];
-    char* mode = new char[1024];
     std::string lastMode = "";
 
     // Threading

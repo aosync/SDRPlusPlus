@@ -61,6 +61,8 @@ namespace ImGui {
         double minBandwidth;
         double maxBandwidth;
         bool bandwidthLocked;
+
+        ImU32 color = IM_COL32(255, 255, 255, 50);
     };
 
     class WaterFall {
@@ -133,6 +135,8 @@ namespace ImGui {
         bool mouseInFFT = false;
         bool mouseInWaterfall = false;
 
+        float selectedVFOSNR = NAN;
+
         std::map<std::string, WaterfallVFO*> vfos;
         std::string selectedVFO = "";
         bool selectedVFOChanged = false;
@@ -161,7 +165,8 @@ namespace ImGui {
         void onResize();
         void updateWaterfallFb();
         void updateWaterfallTexture();
-        void updateAllVFOs();
+        void updateAllVFOs(bool checkRedrawRequired = false);
+        bool calculateVFOSignalInfo(WaterfallVFO* vfo, float& strength, float& snr);
 
         bool waterfallUpdate = false;
 

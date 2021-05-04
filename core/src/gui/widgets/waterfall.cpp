@@ -92,17 +92,6 @@ inline void printAndScale(double freq, char* buf) {
     else if (freqAbs < 1000000000000) {
         sprintf(buf, "%.6lgG", freq / 1000000000.0);
     }
-    // for (int i = strlen(buf) - 2; i >= 0; i--) {
-    //     if (buf[i] != '0') {
-    //         if (buf[i] == '.') {
-    //             i--;
-    //         }
-    //         char scale = buf[strlen(buf) - 1];
-    //         buf[i + 1] = scale;
-    //         buf[i + 2] = 0;
-    //         return;
-    //     }
-    // }
 }
 
 namespace ImGui {
@@ -205,7 +194,7 @@ namespace ImGui {
 
         if (IS_IN_AREA(mPos, wfMin, wfMax)) {
             for (auto const& [name, vfo] : vfos) {
-                window->DrawList->AddRectFilled(vfo->wfRectMin, vfo->wfRectMax, IM_COL32(255, 255, 255, 50));
+                window->DrawList->AddRectFilled(vfo->wfRectMin, vfo->wfRectMax, vfo->color);
                 window->DrawList->AddLine(vfo->wfLineMin, vfo->wfLineMax, (name == selectedVFO) ? IM_COL32(255, 0, 0, 255) : IM_COL32(255, 255, 0, 255));
             }
         }
@@ -213,18 +202,6 @@ namespace ImGui {
 
     void WaterFall::drawVFOs() {
         for (auto const& [name, vfo] : vfos) {
-            if (vfo->redrawRequired) {
-                vfo->redrawRequired = false;
-                vfo->updateDrawingVars(viewBandwidth, dataWidth, viewOffset, widgetPos, fftHeight);
-                vfo->wfRectMin = ImVec2(vfo->rectMin.x, wfMin.y);
-                vfo->wfRectMax = ImVec2(vfo->rectMax.x, wfMax.y);
-                vfo->wfLineMin = ImVec2(vfo->lineMin.x, wfMin.y);
-                vfo->wfLineMax = ImVec2(vfo->lineMax.x, wfMax.y);
-                vfo->wfLbwSelMin = ImVec2(vfo->wfRectMin.x - 2, vfo->wfRectMin.y);
-                vfo->wfLbwSelMax = ImVec2(vfo->wfRectMin.x + 2, vfo->wfRectMax.y);
-                vfo->wfRbwSelMin = ImVec2(vfo->wfRectMax.x - 2, vfo->wfRectMin.y);
-                vfo->wfRbwSelMax = ImVec2(vfo->wfRectMax.x + 2, vfo->wfRectMax.y);
-            }
             vfo->draw(window, name == selectedVFO);
         }
     }
@@ -299,10 +276,6 @@ namespace ImGui {
             // Next, check if a VFO was selected
             if (!targetFound) {
                 for (auto const& [name, _vfo] : vfos) {
-                    if (name == selectedVFO) {
-                        continue;
-                    }
-
                     // If another VFO is selected, select it and cancel out
                     if (IS_IN_AREA(mousePos, _vfo->rectMin, _vfo->rectMax) || IS_IN_AREA(mousePos, _vfo->wfRectMin, _vfo->wfRectMax)) {
                         selectedVFO = name;
@@ -430,7 +403,84 @@ namespace ImGui {
                     selVfo->setOffset(off);
                 }
             }
-        }        
+        }
+        else {
+            // Check if a VFO is hovered. If yes, show tooltip
+            for (auto const& [name, _vfo] : vfos) {
+                if (ImGui::IsMouseHoveringRect(_vfo->rectMin, _vfo->rectMax) || ImGui::IsMouseHoveringRect(_vfo->wfRectMin, _vfo->wfRectMax)) {
+                    char buf[128];
+                    ImGui::BeginTooltip();
+
+                    ImGui::Text(name.c_str());
+
+                    if (ImGui::IsKeyDown(GLFW_KEY_LEFT_CONTROL) || ImGui::IsKeyDown(GLFW_KEY_RIGHT_CONTROL)) {
+                        ImGui::Separator();
+                        printAndScale(_vfo->generalOffset + centerFreq, buf);
+                        ImGui::Text("Frequency: %sHz", buf);
+                        printAndScale(_vfo->bandwidth, buf);
+                        ImGui::Text("Bandwidth: %sHz", buf);
+                        ImGui::Text("Bandwidth Locked: %s", _vfo->bandwidthLocked ? "Yes" : "No");
+
+                        float strength, snr;
+                        if (calculateVFOSignalInfo(_vfo, strength, snr)) {
+                            ImGui::Text("Strength: %0.1fdBFS", strength);
+                            ImGui::Text("SNR: %0.1fdB", snr);
+                        }
+                        else {
+                            ImGui::Text("Strength: ---.-dBFS");
+                            ImGui::Text("SNR: ---.-dB");
+                        }
+                    }
+
+                    ImGui::EndTooltip();
+                    break;
+                }
+            }
+        }      
+    }
+
+    bool WaterFall::calculateVFOSignalInfo(WaterfallVFO* _vfo, float& strength, float& snr) {
+        if (rawFFTs == NULL || fftLines <= 0) { return false; }
+
+        // Calculate FFT index data
+        double vfoMinSizeFreq = _vfo->centerOffset - _vfo->bandwidth;
+        double vfoMinFreq = _vfo->centerOffset - (_vfo->bandwidth/2.0);
+        double vfoMaxFreq = _vfo->centerOffset + (_vfo->bandwidth/2.0);
+        double vfoMaxSizeFreq = _vfo->centerOffset + _vfo->bandwidth;
+        int vfoMinSideOffset = std::clamp<int>(((vfoMinSizeFreq / (wholeBandwidth/2.0)) * (double)(rawFFTSize/2)) + (rawFFTSize/2), 0, rawFFTSize);
+        int vfoMinOffset = std::clamp<int>(((vfoMinFreq / (wholeBandwidth/2.0)) * (double)(rawFFTSize/2)) + (rawFFTSize/2), 0, rawFFTSize);
+        int vfoMaxOffset = std::clamp<int>(((vfoMaxFreq / (wholeBandwidth/2.0)) * (double)(rawFFTSize/2)) + (rawFFTSize/2), 0, rawFFTSize);
+        int vfoMaxSideOffset = std::clamp<int>(((vfoMaxSizeFreq / (wholeBandwidth/2.0)) * (double)(rawFFTSize/2)) + (rawFFTSize/2), 0, rawFFTSize);
+
+        float* fftLine = &rawFFTs[currentFFTLine * rawFFTSize];
+
+        double avg = 0;
+        float max = -INFINITY;
+        int avgCount = 0;
+
+        // Calculate Left average
+        for (int i = vfoMinSideOffset; i < vfoMinOffset; i++) {
+            avg += fftLine[i];
+            avgCount++;
+        }
+
+        // Calculate Right average
+        for (int i = vfoMaxOffset + 1; i < vfoMaxSideOffset; i++) {
+            avg += fftLine[i];
+            avgCount++;
+        }
+
+        avg /= (double)(avgCount);
+
+        // Calculate max
+        for (int i = vfoMinOffset; i <= vfoMaxOffset; i++) {
+            if (fftLine[i] > max) { max = fftLine[i]; }
+        }
+
+        strength = max;
+        snr = max - avg;
+
+        return true;
     }
 
     void WaterFall::setFastFFT(bool fastFFT) {
@@ -648,6 +698,8 @@ namespace ImGui {
         window->DrawList->AddLine(ImVec2(widgetPos.x, widgetPos.y + fftHeight + 50), ImVec2(widgetPos.x + widgetSize.x, widgetPos.y + fftHeight + 50), IM_COL32(50, 50, 50, 255), 1.0);
 
         processInputs();
+
+        updateAllVFOs(true);
         
         drawFFT();
         if (waterfallVisible) {
@@ -735,6 +787,11 @@ namespace ImGui {
         else {
             doZoom(drawDataStart, drawDataSize, dataWidth, rawFFTs, latestFFT, _fastFFT);
             fftLines = 1;
+        }
+
+        if (selectedVFO != "" && vfos.size() > 0) {
+            float dummy;
+            calculateVFOSignalInfo(vfos[selectedVFO], dummy, selectedVFOSNR);
         }
         
         buf_mtx.unlock();
@@ -913,14 +970,14 @@ namespace ImGui {
         return waterfallMax;
     }
 
-    void WaterFall::updateAllVFOs() {
+    void WaterFall::updateAllVFOs(bool checkRedrawRequired) {
         for (auto const& [name, vfo] : vfos) {
+            if (checkRedrawRequired && !vfo->redrawRequired) { continue; }
             vfo->updateDrawingVars(viewBandwidth, dataWidth, viewOffset, widgetPos, fftHeight);
             vfo->wfRectMin = ImVec2(vfo->rectMin.x, wfMin.y);
             vfo->wfRectMax = ImVec2(vfo->rectMax.x, wfMax.y);
             vfo->wfLineMin = ImVec2(vfo->lineMin.x, wfMin.y);
             vfo->wfLineMax = ImVec2(vfo->lineMax.x, wfMax.y);
-
             vfo->wfLbwSelMin = ImVec2(vfo->wfRectMin.x - 2, vfo->wfRectMin.y);
             vfo->wfLbwSelMax = ImVec2(vfo->wfRectMin.x + 2, vfo->wfRectMax.y);
             vfo->wfRbwSelMin = ImVec2(vfo->wfRectMax.x - 2, vfo->wfRectMin.y);
@@ -1058,7 +1115,7 @@ namespace ImGui {
     }
 
     void WaterfallVFO::draw(ImGuiWindow* window, bool selected) {
-        window->DrawList->AddRectFilled(rectMin, rectMax, IM_COL32(255, 255, 255, 50));
+        window->DrawList->AddRectFilled(rectMin, rectMax, color);
         if (lineVisible) {
             window->DrawList->AddLine(lineMin, lineMax, selected ? IM_COL32(255, 0, 0, 255) : IM_COL32(255, 255, 0, 255));
         }
@@ -1071,7 +1128,7 @@ namespace ImGui {
         if (reference != REF_UPPER && !bandwidthLocked) {
             if (IS_IN_AREA(mousePos, rbwSelMin, rbwSelMax)) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
             else if (IS_IN_AREA(mousePos, wfRbwSelMin, wfRbwSelMax)) { ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW); }
-        }        
+        }
     };
 
     void WaterFall::showWaterfall() {

@@ -6,6 +6,7 @@ TODO
 
 ## Naming Convention
 
+- Files: `snake_case.h` `snake_case.cpp`
 - Namespaces: `CamelCase`
 - Classes: `CamelCase`
 - Structs: `CamelCase_t`
@@ -28,6 +29,10 @@ int myFunction() {
 ```
 
 Note: If it makes the code cleaner, remember to use the `?` keyword instead of a `if else` statement.
+
+## Pointers
+
+Please use `type* name` for pointers.
 
 ## Structure
 

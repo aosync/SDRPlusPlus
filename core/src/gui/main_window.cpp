@@ -15,7 +15,6 @@
 #include <signal_path/dsp.h>
 #include <gui/icons.h>
 #include <gui/widgets/bandplan.h>
-#include <watcher.h>
 #include <signal_path/vfo_manager.h>
 #include <gui/style.h>
 #include <config.h>
@@ -32,6 +31,8 @@
 #include <gui/dialogs/loading_screen.h>
 #include <options.h>
 #include <gui/colormaps.h>
+#include <gui/widgets/snr_meter.h>
+#include <gui/menus/vfo_color.h>
 
 int fftSize = 8192 * 8;
 
@@ -83,14 +84,10 @@ void fftHandler(dsp::complex_t* samples, int count, void* ctx) {
     gui::waterfall.pushFFT();
 }
 
-watcher<uint64_t> freq((uint64_t)90500000);
-watcher<double> vfoFreq(92000000.0);
 float fftMin = -70.0;
 float fftMax = 0.0;
-watcher<double> offset(0.0, true);
 float bw = 8000000;
 bool playing = false;
-watcher<bool> dcbias(false, false);
 bool showCredits = false;
 std::string audioStreamName = "";
 std::string sourceName = "";
@@ -102,6 +99,8 @@ bool showMenu = true;
 bool centerTuning = false;
 dsp::stream<dsp::complex_t> dummyStream;
 bool demoWindow = false;
+
+float testSNR = 50;
 
 void windowInit() {
     LoadingScreen::show("Initializing UI");
@@ -137,6 +136,7 @@ void windowInit() {
     gui::menu.registerEntry("Scripting", scriptingmenu::draw, NULL);
     gui::menu.registerEntry("Band Plan", bandplanmenu::draw, NULL);
     gui::menu.registerEntry("Display", displaymenu::draw, NULL);
+    gui::menu.registerEntry("VFO Color", vfo_color_menu::draw, NULL);
     
     gui::freqSelect.init();
 
@@ -216,6 +216,7 @@ void windowInit() {
     scriptingmenu::init();
     bandplanmenu::init();
     displaymenu::init();
+    vfo_color_menu::init();
 
     // TODO for 0.2.5
     // Add "select file" option for the file source
@@ -515,6 +516,13 @@ void drawWindow() {
 
     ImGui::SameLine();
 
+    ImGui::SetCursorPosX(ImGui::GetWindowSize().x - 387);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 5);
+    ImGui::SetNextItemWidth(300);
+    ImGui::SNRMeter((vfo != NULL) ? gui::waterfall.selectedVFOSNR : 0);
+
+    ImGui::SameLine();
+
     // Logo button
     ImGui::SetCursorPosX(ImGui::GetWindowSize().x - 48);
     ImGui::SetCursorPosY(10);
@@ -588,9 +596,6 @@ void drawWindow() {
             ImGui::Text("Framerate: %.1f FPS", ImGui::GetIO().Framerate);
             ImGui::Text("Center Frequency: %.0f Hz", gui::waterfall.getCenterFrequency());
             ImGui::Text("Source name: %s", sourceName.c_str());
-            if (ImGui::Checkbox("Test technique", &dcbias.val)) {
-                //sigpath::signalPath.setDCBiasCorrection(dcbias.val);
-            }
             ImGui::Checkbox("Show demo window", &demoWindow);
             ImGui::Checkbox("Experimental zoom", &experimentalZoom);
             ImGui::Text("ImGui version: %s", ImGui::GetVersion());
@@ -603,6 +608,8 @@ void drawWindow() {
                 gui::menu.order[0].open = true;
                 firstMenuRender = true;
             }
+
+            ImGui::SliderFloat("Testing SNR meter", &testSNR, 0, 100);
 
             ImGui::Spacing();
         }

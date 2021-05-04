@@ -28,7 +28,14 @@ else (MSVC)
     pkg_check_modules(LIBAIRSPYHF REQUIRED libairspyhf)
 
     target_include_directories(airspyhf_source PUBLIC ${LIBAIRSPYHF_INCLUDE_DIRS})
+    target_link_directories(airspyhf_source PUBLIC ${LIBAIRSPYHF_LIBRARY_DIRS})
     target_link_libraries(airspyhf_source PUBLIC ${LIBAIRSPYHF_LIBRARIES})
+
+    # Include it because for some reason pkgconfig doesn't look here?
+    if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+        target_include_directories(airspyhf_source PUBLIC "/usr/local/include")
+    endif()
+    
 endif ()
 
 # Install directives
